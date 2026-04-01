@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.Python
+*.egg-info/
+dist/
+build/
+
+# Virtual environments
+.venv/
+venv/
+
+# Experiment tracking (generated, large)
+mlruns/
+results/tensorboard/
+
+# Intermediate training checkpoints (keep best/final/ablation only)
+results/checkpoints/dqn_ep*.pt
+results/checkpoints/ppo_ep*.pt
+
+# Jupyter
+.ipynb_checkpoints/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/

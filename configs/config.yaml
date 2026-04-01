@@ -1,0 +1,80 @@
+sumo:
+  home: "C:/Program Files (x86)/Eclipse/Sumo"
+  gui: false               # set true to watch simulation
+  step_length: 1.0         # simulation step in seconds
+  yellow_time: 3           # yellow phase duration in seconds
+  simulation_seconds: 3600 # 1 simulated hour per episode
+
+environment:
+  network_dir: "network/single"
+  net_file: "single.net.xml"
+  route_file: "routes_normal.rou.xml"
+  tl_id: "center"
+  incoming_edges: ["N2C", "S2C", "E2C", "W2C"]
+  num_phases: 2            # will be auto-detected from network
+  delta_time: 5            # seconds between agent decisions
+  min_green: 10            # minimum green time before agent can switch (seconds)
+  max_steps: 720           # 3600s / 5s per step = 720 agent steps per episode
+
+state:
+  use_queue: true          # halting vehicles per incoming edge
+  use_density: true        # occupancy % per incoming edge
+  use_waiting_time: true   # cumulative waiting time per incoming edge
+  use_phase: true          # one-hot current green phase
+  normalize: true
+  max_queue: 30            # vehicles (normalization cap)
+  max_waiting: 300.0       # seconds (normalization cap)
+
+action:
+  num_phases: 2            # NS green / EW green (overridden by network at runtime)
+
+reward:
+  type: "waiting_time"     # "waiting_time" | "queue_length" | "combined" | "pressure"
+  waiting_weight: 0.5
+  queue_weight: 0.5
+  scale: 0.001             # scale raw reward to stable range
+
+dqn:
+  lr: 0.001
+  gamma: 0.99
+  epsilon_start: 1.0
+  epsilon_end: 0.05
+  epsilon_decay: 0.9995
+  buffer_size: 50000
+  batch_size: 64
+  target_update: 200       # hard update every N learn steps
+  hidden_dim: 256
+  num_layers: 2
+
+ppo:
+  lr: 3.0e-4
+  gamma: 0.99
+  gae_lambda: 0.95
+  clip_epsilon: 0.2
+  entropy_coef: 0.01
+  value_coef: 0.5
+  max_grad_norm: 0.5
+  update_epochs: 10
+  rollout_steps: 2048      # steps collected before each update
+  mini_batch_size: 64
+  hidden_dim: 256
+  num_layers: 2
+
+training:
+  algorithm: "dqn"         # "dqn" | "ppo"
+  num_episodes: 500
+  eval_interval: 25        # print progress every N episodes
+  save_interval: 100       # save checkpoint every N episodes
+  checkpoint_dir: "results/checkpoints"
+  seed: 42
+  device: "auto"           # "auto" | "cpu" | "cuda"
+
+mlflow:
+  experiment_name: "traffic_rl"
+  tracking_uri: "mlruns"
+  log_artifacts: true
+
+logging:
+  tensorboard_dir: "results/tensorboard"
+  metrics_dir: "results/metrics"
+  plots_dir: "results/plots"
