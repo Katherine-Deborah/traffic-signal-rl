@@ -273,6 +273,22 @@ Trains DQN five times with different subsets of state features:
 
 This answers: **which features are actually necessary? Can we get away with a simpler state?**
 
+**Results (mean waiting time, normal scenario, vs. fixed-time baseline of 42.95s):**
+
+| Variant | Mean Wait (s) | vs. full |
+|---------|:------------:|:-------:|
+| Fixed-time (baseline) | 42.95 | — |
+| `full` | 8.99 | — |
+| `no_density` | **8.90** | −0.09s |
+| `no_waiting` | 9.02 | +0.03s |
+| `queue_only` | 9.49 | +0.50s |
+| `no_phase` | 9.93 | +0.94s |
+
+Key findings:
+- Removing **density** slightly *improved* performance — it is likely redundant with queue length and adds noise
+- Removing **phase** caused the largest drop — knowing which direction is currently green is the most critical feature
+- Even **queue + phase only** (the simplest possible state) reduced waiting time by 78% vs. fixed-time, showing the model is robust to feature reduction
+
 Output: `results/metrics/state_ablation.csv`, `results/plots/state_ablation.png`
 
 ---
