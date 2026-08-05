@@ -224,7 +224,7 @@ How it works:
 6. Epsilon decays from 1.0 → 0.05 **per episode** (`epsilon_decay = 0.99`, floor reached ~episode 300 of 500). Decaying per learn-step — the common tutorial pattern — would exhaust exploration within ~8 episodes here (720 learn steps/episode).
 7. Episodes end by **time limit**, which is not a true terminal state — so the Q-target still bootstraps `max Q(s′,·)` across episode boundaries instead of zeroing it (Pardo et al. 2018, *Time Limits in Reinforcement Learning*).
 
-Network architecture: `input(15) → Linear(256) → ReLU → Linear(256) → ReLU → Linear(2)`
+Network architecture: `input(17) → Linear(256) → ReLU → Linear(256) → ReLU → Linear(4)`
 
 Key hyperparameters (`config.yaml` under `dqn:`):
 - `lr: 0.001` — Adam learning rate
@@ -243,7 +243,7 @@ How it works:
 4. Run **10 epochs** of mini-batch updates over the collected data. Each update uses the **clipped surrogate objective** to prevent the policy from changing too drastically in one step (clip_epsilon = 0.2).
 5. The loss combines: policy gradient + value function error + entropy bonus (encourages exploration).
 
-Network architecture: shared trunk `input(15) → Linear(256) → ReLU → Linear(256) → ReLU`, then two heads — `actor: Linear(256) → Linear(2)` and `critic: Linear(256) → Linear(1)`.
+Network architecture: shared trunk `input(17) → Linear(256) → ReLU → Linear(256) → ReLU`, then two heads — `actor: Linear(256) → Linear(4)` and `critic: Linear(256) → Linear(1)`.
 
 Key hyperparameters (`config.yaml` under `ppo:`):
 - `lr: 3e-4` — Adam learning rate
