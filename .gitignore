@@ -29,3 +29,14 @@ Thumbs.db
 # IDE
 .vscode/
 .idea/
+
+# Local project-tracker tool (not part of this project)
+.tracker/
+requirements.md
+
+# Test cache
+.pytest_cache/
+
+# Pipeline run logs (regenerated each run)
+results/pipeline.log
+results/pipeline_stdout.log

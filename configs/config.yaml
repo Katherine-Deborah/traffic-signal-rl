@@ -3,7 +3,7 @@ sumo:
   gui: false               # set true to watch simulation
   step_length: 1.0         # simulation step in seconds
   yellow_time: 3           # yellow phase duration in seconds
-  simulation_seconds: 3600 # 1 simulated hour per episode
+  simulation_seconds: 3600 # documentation only — episode length is max_steps × delta_time
 
 environment:
   network_dir: "network/single"
@@ -39,7 +39,7 @@ dqn:
   gamma: 0.99
   epsilon_start: 1.0
   epsilon_end: 0.05
-  epsilon_decay: 0.9995
+  epsilon_decay: 0.99     # per-EPISODE decay: 0.99^300 ≈ 0.05, i.e. floor reached ~ep 300 of 500
   buffer_size: 50000
   batch_size: 64
   target_update: 200       # hard update every N learn steps
@@ -63,7 +63,7 @@ ppo:
 training:
   algorithm: "dqn"         # "dqn" | "ppo"
   num_episodes: 500
-  eval_interval: 25        # print progress every N episodes
+  log_interval: 25         # print progress every N episodes
   save_interval: 100       # save checkpoint every N episodes
   checkpoint_dir: "results/checkpoints"
   seed: 42

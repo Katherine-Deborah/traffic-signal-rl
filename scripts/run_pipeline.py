@@ -1,0 +1,94 @@
+"""
+Full retraining pipeline — runs every step in order and logs to results/pipeline.log.
+
+Usage
+-----
+    python scripts/run_pipeline.py                     # everything (~5 hrs)
+    python scripts/run_pipeline.py --core-only          # train + eval + curves (~2 hrs)
+    python scripts/run_pipeline.py --start-from "Train PPO"   # resume after an interruption
+
+Appends to results/pipeline.log rather than overwriting, so a resumed run keeps
+the history of the earlier attempt.
+"""
+
+import argparse
+import os
+import subprocess
+import sys
+import time
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+CORE_STEPS = [
+    ("Generate network", [sys.executable, "network/generate_network.py"]),
+    ("Train DQN", [sys.executable, "training/train.py", "--algo", "dqn"]),
+    ("Train PPO", [sys.executable, "training/train.py", "--algo", "ppo"]),
+    ("Evaluate", [sys.executable, "training/evaluate.py"]),
+    ("Plot training curves", [sys.executable, "training/plot_curves.py"]),
+]
+
+ABLATION_STEPS = [
+    ("Reward ablation", [sys.executable, "experiments/reward_ablation.py"]),
+    ("State ablation", [sys.executable, "experiments/state_ablation.py"]),
+]
+
+
+def main() -> None:
+    p = argparse.ArgumentParser()
+    p.add_argument("--core-only", action="store_true", help="Skip ablation experiments")
+    p.add_argument(
+        "--start-from", default=None,
+        help="Step name to resume from (skips every step before it). "
+             "Must match a step name exactly, e.g. 'Train PPO'.",
+    )
+    args = p.parse_args()
+
+    steps = CORE_STEPS + ([] if args.core_only else ABLATION_STEPS)
+
+    if args.start_from:
+        names = [name for name, _ in steps]
+        if args.start_from not in names:
+            print(f"Unknown step '{args.start_from}'. Valid: {names}")
+            sys.exit(1)
+        steps = steps[names.index(args.start_from):]
+
+    env = os.environ.copy()
+    env["PYTHONIOENCODING"] = "utf-8"
+
+    log_path = os.path.join(ROOT, "results", "pipeline.log")
+    os.makedirs(os.path.dirname(log_path), exist_ok=True)
+
+    t_start = time.time()
+    with open(log_path, "a", encoding="utf-8") as log:
+        if args.start_from:
+            resume_banner = f"\n\n{'#' * 60}\n  RESUMING from '{args.start_from}'\n{'#' * 60}\n"
+            print(resume_banner, flush=True)
+            log.write(resume_banner)
+        for i, (name, cmd) in enumerate(steps, 1):
+            banner = f"\n{'=' * 60}\n  [{i}/{len(steps)}] {name}\n{'=' * 60}\n"
+            print(banner, flush=True)
+            log.write(banner)
+            log.flush()
+
+            t0 = time.time()
+            result = subprocess.run(
+                cmd, cwd=ROOT, env=env, stdout=log, stderr=subprocess.STDOUT
+            )
+            elapsed = (time.time() - t0) / 60
+
+            status = "OK" if result.returncode == 0 else f"FAILED (exit {result.returncode})"
+            line = f"  -> {name}: {status}  ({elapsed:.1f} min)\n"
+            print(line, flush=True)
+            log.write(line)
+            log.flush()
+
+            if result.returncode != 0:
+                print(f"\nPipeline stopped at '{name}'. See {log_path}", flush=True)
+                sys.exit(result.returncode)
+
+    total = (time.time() - t_start) / 3600
+    print(f"\nPipeline complete in {total:.1f} hours. Full log: {log_path}", flush=True)
+
+
+if __name__ == "__main__":
+    main()

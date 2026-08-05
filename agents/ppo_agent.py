@@ -185,6 +185,13 @@ class PPOAgent(BaseAgent):
 
         return int(action.item()), float(log_prob.item()), float(value.item())
 
+    def get_value(self, state: np.ndarray) -> float:
+        """Critic value of a state — used by the training loop to bootstrap
+        at rollout boundaries and at time-limit truncations."""
+        with torch.no_grad():
+            _, value = self.actor_critic(self._to_tensor(state).unsqueeze(0))
+        return float(value.item())
+
     def store_transition(
         self,
         state:    np.ndarray,
@@ -196,14 +203,20 @@ class PPOAgent(BaseAgent):
     ) -> None:
         self.buffer.push(state, action, reward, log_prob, value, done)
 
-    def learn(self) -> Optional[Dict[str, float]]:
+    def learn(self, last_value: float = 0.0) -> Optional[Dict[str, float]]:
+        """
+        last_value: V(s) of the state the env is currently in when the rollout
+        buffer fills mid-episode. Used to bootstrap the final transition's
+        advantage instead of incorrectly treating the rollout cut-off as a
+        terminal state.
+        """
         if not self.buffer.is_full():
             return None
 
         states, actions, rewards, old_log_probs, values, dones = self.buffer.get()
 
         # ── GAE advantage estimation ─────────────────────────────────────────
-        advantages, returns = self._compute_gae(rewards, values, dones)
+        advantages, returns = self._compute_gae(rewards, values, dones, last_value)
         advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
 
         # ── Mini-batch updates ───────────────────────────────────────────────
@@ -293,15 +306,19 @@ class PPOAgent(BaseAgent):
 
     def _compute_gae(
         self,
-        rewards: torch.Tensor,
-        values:  torch.Tensor,
-        dones:   torch.Tensor,
+        rewards:    torch.Tensor,
+        values:     torch.Tensor,
+        dones:      torch.Tensor,
+        last_value: float = 0.0,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         advantages = torch.zeros_like(rewards)
         gae        = 0.0
 
         for t in reversed(range(self.rollout_steps)):
-            next_val  = 0.0 if t == self.rollout_steps - 1 else values[t + 1].item()
+            # Bootstrap the final rollout transition with V(s_next) supplied by
+            # the caller; if that transition ended an episode (dones[t] = 1)
+            # the (1 - dones) factor zeroes the bootstrap anyway.
+            next_val  = last_value if t == self.rollout_steps - 1 else values[t + 1].item()
             delta     = rewards[t] + self.gamma * next_val * (1 - dones[t]) - values[t]
             gae       = float(delta) + self.gamma * self.gae_lambda * (1 - dones[t]) * gae
             advantages[t] = gae

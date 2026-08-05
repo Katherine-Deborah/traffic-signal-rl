@@ -130,8 +130,9 @@ def _train_variant(
             **{f"state.{k}": v for k, v in state_overrides.items()},
         })
 
+        base_seed = config["training"]["seed"]
         for episode in range(n_episodes):
-            state, _ = env.reset()
+            state, _ = env.reset(seed=base_seed + episode)
             ep_reward = 0.0
             done = False
 
@@ -139,11 +140,13 @@ def _train_variant(
                 action = agent.select_action(state, explore=True)
                 next_state, reward, terminated, truncated, _ = env.step(action)
                 done = terminated or truncated
-                agent.store_transition(state, action, reward, next_state, float(done))
+                # Bootstrap across time-limit truncation (store terminated only)
+                agent.store_transition(state, action, reward, next_state, float(terminated))
                 agent.learn()
                 ep_reward += reward
                 state = next_state
 
+            agent.decay_epsilon()
             metrics = env.get_episode_metrics()
             mlflow.log_metrics({"episode_reward": ep_reward, **metrics}, step=episode)
 
@@ -228,7 +231,7 @@ def state_ablation(
         delta_time = config["environment"]["delta_time"],
         num_phases = num_actions,
     )
-    results.append(evaluate(config, baseline, "Fixed-time", n_episodes=3, scenario=scenario))
+    results.append(evaluate(config, baseline, "Fixed-time", n_episodes=5, scenario=scenario))
 
     # ── Train + evaluate each state variant ──────────────────────────────────
     for variant_name, overrides in STATE_VARIANTS.items():
@@ -250,7 +253,7 @@ def state_ablation(
             agent.load(ckpt)
 
         results.append(
-            evaluate(_cfg, agent, f"DQN ({variant_name})", n_episodes=3, scenario=scenario)
+            evaluate(_cfg, agent, f"DQN ({variant_name})", n_episodes=5, scenario=scenario)
         )
 
     # ── Report ───────────────────────────────────────────────────────────────

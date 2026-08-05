@@ -87,16 +87,18 @@ def _train_dqn(
     run_name: str,
 ) -> None:
     num_episodes  = config["training"]["num_episodes"]
-    eval_interval = config["training"]["eval_interval"]
+    log_interval  = config["training"]["log_interval"]
     save_interval = config["training"]["save_interval"]
     ckpt_dir      = config["training"]["checkpoint_dir"]
+    base_seed     = config["training"]["seed"]
 
     global_step = 0
     best_reward = -np.inf
     t0          = time.time()
 
     for episode in range(num_episodes):
-        state, _ = env.reset()
+        # Distinct seed per episode → different (but reproducible) traffic
+        state, _ = env.reset(seed=base_seed + episode)
         ep_reward = 0.0
         done      = False
 
@@ -105,7 +107,11 @@ def _train_dqn(
             next_state, reward, terminated, truncated, info = env.step(action)
             done       = terminated or truncated
 
-            agent.store_transition(state, action, reward, next_state, float(done))
+            # Store only true terminals as done: episodes here end by time
+            # limit (truncation), which is not a real terminal state, so the
+            # Q-target must still bootstrap V(s') across the episode boundary
+            # (Pardo et al. 2018, "Time Limits in Reinforcement Learning").
+            agent.store_transition(state, action, reward, next_state, float(terminated))
             result = agent.learn()
 
             if result:
@@ -115,6 +121,8 @@ def _train_dqn(
             ep_reward  += reward
             state       = next_state
             global_step += 1
+
+        agent.decay_epsilon()   # per-episode decay (see DQNAgent.decay_epsilon)
 
         metrics      = env.get_episode_metrics()
         agent_metrics = agent.get_metrics()
@@ -139,7 +147,7 @@ def _train_dqn(
             best_reward = ep_reward
             agent.save(os.path.join(ckpt_dir, f"dqn_best.pt"))
 
-        if (episode + 1) % eval_interval == 0:
+        if (episode + 1) % log_interval == 0:
             elapsed = time.time() - t0
             print(
                 f"[DQN] Ep {episode+1:4d}/{num_episodes}  "
@@ -176,9 +184,10 @@ def _train_ppo(
     run_name: str,
 ) -> None:
     num_episodes  = config["training"]["num_episodes"]
-    eval_interval = config["training"]["eval_interval"]
+    log_interval  = config["training"]["log_interval"]
     save_interval = config["training"]["save_interval"]
     ckpt_dir      = config["training"]["checkpoint_dir"]
+    base_seed     = config["training"]["seed"]
 
     episode     = 0
     global_step = 0
@@ -186,7 +195,7 @@ def _train_ppo(
     ep_reward   = 0.0
     t0          = time.time()
 
-    state, _ = env.reset()
+    state, _ = env.reset(seed=base_seed)
 
     while episode < num_episodes:
         # ── Collect rollout ──────────────────────────────────────────────────
@@ -195,7 +204,15 @@ def _train_ppo(
             next_state, reward, terminated, truncated, info = env.step(action)
             done = terminated or truncated
 
-            agent.store_transition(state, action, reward, log_prob, value, float(done))
+            # Time-limit truncation is not a real terminal: preserve the value
+            # of the cut-off future by bootstrapping it into the stored reward
+            # (partial-episode bootstrapping, Pardo et al. 2018). done=1 still
+            # stops GAE from propagating across the episode boundary.
+            store_reward = reward
+            if truncated and not terminated:
+                store_reward += agent.gamma * agent.get_value(next_state)
+
+            agent.store_transition(state, action, store_reward, log_prob, value, float(done))
 
             ep_reward  += reward
             state       = next_state
@@ -217,7 +234,7 @@ def _train_ppo(
                     best_reward = ep_reward
                     agent.save(os.path.join(ckpt_dir, "ppo_best.pt"))
 
-                if (episode + 1) % eval_interval == 0:
+                if (episode + 1) % log_interval == 0:
                     elapsed = time.time() - t0
                     print(
                         f"[PPO] Ep {episode+1:4d}/{num_episodes}  "
@@ -235,13 +252,15 @@ def _train_ppo(
 
                 episode   += 1
                 ep_reward  = 0.0
-                state, _   = env.reset()
+                state, _   = env.reset(seed=base_seed + episode)
 
                 if episode >= num_episodes:
                     break
 
         # ── Update policy ────────────────────────────────────────────────────
-        update_metrics = agent.learn()
+        # Bootstrap the rollout tail with V(current state); ignored via the
+        # done mask if the rollout happened to end exactly at an episode end.
+        update_metrics = agent.learn(last_value=agent.get_value(state))
         if update_metrics:
             for k, v in update_metrics.items():
                 writer.add_scalar(f"train/{k}", v, agent._update_count)

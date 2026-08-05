@@ -59,8 +59,10 @@ def make_env(config: Dict[str, Any], scenario: str, gui: bool = False) -> Traffi
 #  Run one episode, return metrics
 # ──────────────────────────────────────────────
 
-def run_episode(env: TrafficEnv, controller, is_ppo: bool = False) -> Dict[str, float]:
-    state, _ = env.reset()
+def run_episode(
+    env: TrafficEnv, controller, is_ppo: bool = False, seed: Optional[int] = None
+) -> Dict[str, float]:
+    state, _ = env.reset(seed=seed)
     done      = False
     ep_reward = 0.0
 
@@ -104,7 +106,9 @@ def evaluate(
     print(f"\n  Evaluating [{controller_name}] for {n_episodes} episodes...")
 
     for ep in range(n_episodes):
-        m = run_episode(env, controller, is_ppo=is_ppo)
+        # Fixed eval seed range, disjoint from training seeds (42..541), so
+        # every controller faces the same set of distinct traffic realisations.
+        m = run_episode(env, controller, is_ppo=is_ppo, seed=10_000 + ep)
         all_metrics.append(m)
         print(
             f"    ep {ep+1:2d}  reward={m['episode_reward']:7.2f}  "
@@ -123,29 +127,6 @@ def evaluate(
         summary[f"{k}_std"]  = float(np.std(vals))
 
     return summary
-
-
-# ──────────────────────────────────────────────
-#  Run baseline (no ML model needed)
-# ──────────────────────────────────────────────
-
-def run_baseline(
-    config:     Dict[str, Any],
-    n_episodes: int = 5,
-    scenario:   str = "normal",
-    gui:        bool = False,
-) -> Dict[str, Any]:
-    env        = make_env(config, scenario)
-    _, _       = env.reset()
-    num_phases = env.action_space.n
-    env.close()
-
-    baseline = FixedTimeController(
-        cycle_time  = 60,
-        delta_time  = config["environment"]["delta_time"],
-        num_phases  = num_phases,
-    )
-    return evaluate(config, baseline, "Fixed-time", n_episodes, scenario, gui, is_ppo=False)
 
 
 # ──────────────────────────────────────────────

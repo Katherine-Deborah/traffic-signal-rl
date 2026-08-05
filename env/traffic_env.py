@@ -141,7 +141,14 @@ class TrafficEnv(gym.Env):
 
         self._close_sumo()
 
-        self._traci.start(self._sumo_cmd, label=self.label)
+        # Vary SUMO's RNG seed each episode so vehicle insertion (Poisson
+        # arrivals in the route files) and driver behaviour differ between
+        # episodes. Deterministic when reset(seed=...) is given, since the
+        # SUMO seed is drawn from Gymnasium's np_random.
+        sumo_seed = int(self.np_random.integers(0, 2**31 - 1))
+        self._traci.start(
+            self._sumo_cmd + ["--seed", str(sumo_seed)], label=self.label
+        )
         self._sumo_running = True
 
         self._discover_phases()
@@ -165,6 +172,11 @@ class TrafficEnv(gym.Env):
     ) -> Tuple[np.ndarray, float, bool, bool, Dict]:
 
         # ── Enforce minimum green time ───────────────────────────────────────
+        # green_duration counts *actual green seconds* of the current phase.
+        # Because decisions happen every delta_time (5 s) and a switch step
+        # yields only (delta_time - yellow_time) = 2 s of green, green time
+        # quantises to 2 + 5k seconds. The effective minimum green is therefore
+        # the smallest such value >= min_green (12 s with the default config).
         if self.green_duration < self.min_green and action != self.current_phase_idx:
             action = self.current_phase_idx
 
@@ -215,6 +227,11 @@ class TrafficEnv(gym.Env):
     def _close_sumo(self) -> None:
         if self._sumo_running:
             try:
+                # Select this env's own connection before closing, so that a
+                # stale instance being garbage-collected can never close a
+                # connection belonging to another live env (relevant once
+                # multiple envs exist, e.g. the multi-agent grid).
+                self._traci.switch(self.label)
                 self._traci.close()
             except Exception:
                 pass

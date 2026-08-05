@@ -119,7 +119,7 @@ def write_route_file(path: str, scenario: str = "normal") -> None:
         '<routes xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"',
         '        xsi:noNamespaceSchemaLocation="http://sumo.dlr.de/xsd/routes_file.xsd">',
         '',
-        '    <vType id="car" accel="2.6" decel="4.5" sigma="0.5"',
+        '    <vType id="car" accel="2.6" decel="4.5" sigma="0.5" speedDev="0.1"',
         '           length="5.0" minGap="2.5" maxSpeed="13.89" guiShape="passenger"/>',
         '',
         '    <!-- Route definitions -->',
@@ -131,11 +131,16 @@ def write_route_file(path: str, scenario: str = "normal") -> None:
     lines.append('')
     lines.append('    <!-- Traffic flows -->')
 
+    # Poisson arrivals: period="exp(rate)" draws exponentially distributed
+    # insertion gaps (rate in veh/s), so vehicle arrival patterns vary with
+    # SUMO's --seed. Plain vehsPerHour would insert equally spaced vehicles,
+    # making every episode identical regardless of seed.
     for route_id, vph in flows.items():
         if vph > 0:
+            rate = vph / 3600.0
             lines.append(
                 f'    <flow id="flow_{route_id}" route="{route_id}" '
-                f'begin="0" end="3600" vehsPerHour="{vph}" type="car"/>'
+                f'begin="0" end="3600" period="exp({rate:.6f})" type="car"/>'
             )
 
     lines.append('</routes>')

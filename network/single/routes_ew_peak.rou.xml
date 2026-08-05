@@ -2,7 +2,7 @@
 <routes xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
         xsi:noNamespaceSchemaLocation="http://sumo.dlr.de/xsd/routes_file.xsd">
 
-    <vType id="car" accel="2.6" decel="4.5" sigma="0.5"
+    <vType id="car" accel="2.6" decel="4.5" sigma="0.5" speedDev="0.1"
            length="5.0" minGap="2.5" maxSpeed="13.89" guiShape="passenger"/>
 
     <!-- Route definitions -->
@@ -20,16 +20,16 @@
     <route id="W2S" edges="W2C C2S"/>
 
     <!-- Traffic flows -->
-    <flow id="flow_N2S" route="N2S" begin="0" end="3600" vehsPerHour="200" type="car"/>
-    <flow id="flow_S2N" route="S2N" begin="0" end="3600" vehsPerHour="200" type="car"/>
-    <flow id="flow_E2W" route="E2W" begin="0" end="3600" vehsPerHour="600" type="car"/>
-    <flow id="flow_W2E" route="W2E" begin="0" end="3600" vehsPerHour="600" type="car"/>
-    <flow id="flow_N2E" route="N2E" begin="0" end="3600" vehsPerHour="50" type="car"/>
-    <flow id="flow_N2W" route="N2W" begin="0" end="3600" vehsPerHour="50" type="car"/>
-    <flow id="flow_S2E" route="S2E" begin="0" end="3600" vehsPerHour="50" type="car"/>
-    <flow id="flow_S2W" route="S2W" begin="0" end="3600" vehsPerHour="50" type="car"/>
-    <flow id="flow_E2N" route="E2N" begin="0" end="3600" vehsPerHour="150" type="car"/>
-    <flow id="flow_E2S" route="E2S" begin="0" end="3600" vehsPerHour="150" type="car"/>
-    <flow id="flow_W2N" route="W2N" begin="0" end="3600" vehsPerHour="150" type="car"/>
-    <flow id="flow_W2S" route="W2S" begin="0" end="3600" vehsPerHour="150" type="car"/>
+    <flow id="flow_N2S" route="N2S" begin="0" end="3600" period="exp(0.055556)" type="car"/>
+    <flow id="flow_S2N" route="S2N" begin="0" end="3600" period="exp(0.055556)" type="car"/>
+    <flow id="flow_E2W" route="E2W" begin="0" end="3600" period="exp(0.166667)" type="car"/>
+    <flow id="flow_W2E" route="W2E" begin="0" end="3600" period="exp(0.166667)" type="car"/>
+    <flow id="flow_N2E" route="N2E" begin="0" end="3600" period="exp(0.013889)" type="car"/>
+    <flow id="flow_N2W" route="N2W" begin="0" end="3600" period="exp(0.013889)" type="car"/>
+    <flow id="flow_S2E" route="S2E" begin="0" end="3600" period="exp(0.013889)" type="car"/>
+    <flow id="flow_S2W" route="S2W" begin="0" end="3600" period="exp(0.013889)" type="car"/>
+    <flow id="flow_E2N" route="E2N" begin="0" end="3600" period="exp(0.041667)" type="car"/>
+    <flow id="flow_E2S" route="E2S" begin="0" end="3600" period="exp(0.041667)" type="car"/>
+    <flow id="flow_W2N" route="W2N" begin="0" end="3600" period="exp(0.041667)" type="car"/>
+    <flow id="flow_W2S" route="W2S" begin="0" end="3600" period="exp(0.041667)" type="car"/>
 </routes>
