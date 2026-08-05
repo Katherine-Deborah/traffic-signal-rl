@@ -16,11 +16,12 @@ MLflow UI
 """
 
 import argparse
+import json
 import os
 import random
 import sys
 import time
-from typing import Any, Dict
+from typing import Any, Dict, Optional, Tuple
 
 import mlflow
 import numpy as np
@@ -76,6 +77,36 @@ def flat_params(config: Dict[str, Any], algo: str) -> Dict[str, Any]:
 
 
 # ──────────────────────────────────────────────
+#  Resume support
+# ──────────────────────────────────────────────
+#
+# A single training run (500 episodes) can take well over an hour, longer
+# than some execution environments allow a single process to run
+# uninterrupted. Rather than only checkpointing every save_interval (100)
+# episodes and losing everything since, a lightweight "latest" checkpoint +
+# JSON progress sidecar is written every latest_interval episodes, and
+# --resume picks it back up — so an interruption loses at most
+# latest_interval episodes of progress, not the whole run.
+
+def _progress_path(ckpt_dir: str, algo: str) -> str:
+    return os.path.join(ckpt_dir, f"{algo}_progress.json")
+
+
+def _save_progress(ckpt_dir: str, algo: str, episode: int, best_reward: float) -> None:
+    with open(_progress_path(ckpt_dir, algo), "w") as f:
+        json.dump({"episode": episode, "best_reward": best_reward}, f)
+
+
+def _load_progress(ckpt_dir: str, algo: str) -> Optional[Tuple[int, float]]:
+    path = _progress_path(ckpt_dir, algo)
+    if not os.path.exists(path):
+        return None
+    with open(path) as f:
+        data = json.load(f)
+    return data["episode"], data["best_reward"]
+
+
+# ──────────────────────────────────────────────
 #  DQN training loop
 # ──────────────────────────────────────────────
 
@@ -85,18 +116,30 @@ def _train_dqn(
     config:  Dict[str, Any],
     writer:  SummaryWriter,
     run_name: str,
+    start_episode: int = 0,
+    best_reward: float = -np.inf,
 ) -> None:
-    num_episodes  = config["training"]["num_episodes"]
-    eval_interval = config["training"]["eval_interval"]
-    save_interval = config["training"]["save_interval"]
-    ckpt_dir      = config["training"]["checkpoint_dir"]
+    num_episodes    = config["training"]["num_episodes"]
+    log_interval    = config["training"]["log_interval"]
+    save_interval   = config["training"]["save_interval"]
+    latest_interval = config["training"].get("latest_interval", 20)
+    ckpt_dir        = config["training"]["checkpoint_dir"]
+    base_seed       = config["training"]["seed"]
+
+    if start_episode >= num_episodes:
+        print(f"[DQN] Already complete ({start_episode}/{num_episodes} episodes). Nothing to do.")
+        return
+
+    if start_episode > 0:
+        print(f"[DQN] Resuming from episode {start_episode}/{num_episodes} "
+              f"(best_reward so far: {best_reward:.2f})")
 
     global_step = 0
-    best_reward = -np.inf
     t0          = time.time()
 
-    for episode in range(num_episodes):
-        state, _ = env.reset()
+    for episode in range(start_episode, num_episodes):
+        # Distinct seed per episode → different (but reproducible) traffic
+        state, _ = env.reset(seed=base_seed + episode)
         ep_reward = 0.0
         done      = False
 
@@ -105,7 +148,11 @@ def _train_dqn(
             next_state, reward, terminated, truncated, info = env.step(action)
             done       = terminated or truncated
 
-            agent.store_transition(state, action, reward, next_state, float(done))
+            # Store only true terminals as done: episodes here end by time
+            # limit (truncation), which is not a real terminal state, so the
+            # Q-target must still bootstrap V(s') across the episode boundary
+            # (Pardo et al. 2018, "Time Limits in Reinforcement Learning").
+            agent.store_transition(state, action, reward, next_state, float(terminated))
             result = agent.learn()
 
             if result:
@@ -115,6 +162,8 @@ def _train_dqn(
             ep_reward  += reward
             state       = next_state
             global_step += 1
+
+        agent.decay_epsilon()   # per-episode decay (see DQNAgent.decay_epsilon)
 
         metrics      = env.get_episode_metrics()
         agent_metrics = agent.get_metrics()
@@ -139,7 +188,7 @@ def _train_dqn(
             best_reward = ep_reward
             agent.save(os.path.join(ckpt_dir, f"dqn_best.pt"))
 
-        if (episode + 1) % eval_interval == 0:
+        if (episode + 1) % log_interval == 0:
             elapsed = time.time() - t0
             print(
                 f"[DQN] Ep {episode+1:4d}/{num_episodes}  "
@@ -156,11 +205,16 @@ def _train_dqn(
             if config["mlflow"]["log_artifacts"]:
                 mlflow.log_artifact(ckpt_path)
 
+        if (episode + 1) % latest_interval == 0:
+            agent.save(os.path.join(ckpt_dir, "dqn_latest.pt"))
+            _save_progress(ckpt_dir, "dqn", episode + 1, best_reward)
+
     # Save final
     final_path = os.path.join(ckpt_dir, "dqn_final.pt")
     agent.save(final_path)
     if config["mlflow"]["log_artifacts"]:
         mlflow.log_artifact(final_path)
+    _save_progress(ckpt_dir, "dqn", num_episodes, best_reward)
     print(f"\n[DQN] Training complete. Best reward: {best_reward:.2f}")
 
 
@@ -174,19 +228,30 @@ def _train_ppo(
     config:  Dict[str, Any],
     writer:  SummaryWriter,
     run_name: str,
+    start_episode: int = 0,
+    best_reward: float = -np.inf,
 ) -> None:
-    num_episodes  = config["training"]["num_episodes"]
-    eval_interval = config["training"]["eval_interval"]
-    save_interval = config["training"]["save_interval"]
-    ckpt_dir      = config["training"]["checkpoint_dir"]
+    num_episodes    = config["training"]["num_episodes"]
+    log_interval    = config["training"]["log_interval"]
+    save_interval   = config["training"]["save_interval"]
+    latest_interval = config["training"].get("latest_interval", 20)
+    ckpt_dir        = config["training"]["checkpoint_dir"]
+    base_seed       = config["training"]["seed"]
 
-    episode     = 0
+    if start_episode >= num_episodes:
+        print(f"[PPO] Already complete ({start_episode}/{num_episodes} episodes). Nothing to do.")
+        return
+
+    if start_episode > 0:
+        print(f"[PPO] Resuming from episode {start_episode}/{num_episodes} "
+              f"(best_reward so far: {best_reward:.2f})")
+
+    episode     = start_episode
     global_step = 0
-    best_reward = -np.inf
     ep_reward   = 0.0
     t0          = time.time()
 
-    state, _ = env.reset()
+    state, _ = env.reset(seed=base_seed + episode)
 
     while episode < num_episodes:
         # ── Collect rollout ──────────────────────────────────────────────────
@@ -195,7 +260,15 @@ def _train_ppo(
             next_state, reward, terminated, truncated, info = env.step(action)
             done = terminated or truncated
 
-            agent.store_transition(state, action, reward, log_prob, value, float(done))
+            # Time-limit truncation is not a real terminal: preserve the value
+            # of the cut-off future by bootstrapping it into the stored reward
+            # (partial-episode bootstrapping, Pardo et al. 2018). done=1 still
+            # stops GAE from propagating across the episode boundary.
+            store_reward = reward
+            if truncated and not terminated:
+                store_reward += agent.gamma * agent.get_value(next_state)
+
+            agent.store_transition(state, action, store_reward, log_prob, value, float(done))
 
             ep_reward  += reward
             state       = next_state
@@ -217,7 +290,7 @@ def _train_ppo(
                     best_reward = ep_reward
                     agent.save(os.path.join(ckpt_dir, "ppo_best.pt"))
 
-                if (episode + 1) % eval_interval == 0:
+                if (episode + 1) % log_interval == 0:
                     elapsed = time.time() - t0
                     print(
                         f"[PPO] Ep {episode+1:4d}/{num_episodes}  "
@@ -233,15 +306,21 @@ def _train_ppo(
                     if config["mlflow"]["log_artifacts"]:
                         mlflow.log_artifact(ckpt_path)
 
+                if (episode + 1) % latest_interval == 0:
+                    agent.save(os.path.join(ckpt_dir, "ppo_latest.pt"))
+                    _save_progress(ckpt_dir, "ppo", episode + 1, best_reward)
+
                 episode   += 1
                 ep_reward  = 0.0
-                state, _   = env.reset()
+                state, _   = env.reset(seed=base_seed + episode)
 
                 if episode >= num_episodes:
                     break
 
         # ── Update policy ────────────────────────────────────────────────────
-        update_metrics = agent.learn()
+        # Bootstrap the rollout tail with V(current state); ignored via the
+        # done mask if the rollout happened to end exactly at an episode end.
+        update_metrics = agent.learn(last_value=agent.get_value(state))
         if update_metrics:
             for k, v in update_metrics.items():
                 writer.add_scalar(f"train/{k}", v, agent._update_count)
@@ -251,6 +330,7 @@ def _train_ppo(
     agent.save(final_path)
     if config["mlflow"]["log_artifacts"]:
         mlflow.log_artifact(final_path)
+    _save_progress(ckpt_dir, "ppo", num_episodes, best_reward)
     print(f"\n[PPO] Training complete. Best reward: {best_reward:.2f}")
 
 
@@ -258,9 +338,13 @@ def _train_ppo(
 #  Public entry point
 # ──────────────────────────────────────────────
 
-def train(config: Dict[str, Any], algo: str, scenario: str = "normal", gui: bool = False) -> None:
+def train(
+    config: Dict[str, Any], algo: str, scenario: str = "normal", gui: bool = False,
+    resume: bool = False,
+) -> None:
     set_seed(config["training"]["seed"])
-    os.makedirs(config["training"]["checkpoint_dir"], exist_ok=True)
+    ckpt_dir = config["training"]["checkpoint_dir"]
+    os.makedirs(ckpt_dir, exist_ok=True)
 
     env    = make_env(config, scenario, gui)
     device = get_device(config)
@@ -281,6 +365,17 @@ def train(config: Dict[str, Any], algo: str, scenario: str = "normal", gui: bool
     else:
         raise ValueError(f"Unknown algorithm: {algo}. Choose 'dqn' or 'ppo'.")
 
+    start_episode = 0
+    best_reward   = -np.inf
+    if resume:
+        progress = _load_progress(ckpt_dir, algo)
+        latest_ckpt = os.path.join(ckpt_dir, f"{algo}_latest.pt")
+        if progress is not None and os.path.exists(latest_ckpt):
+            start_episode, best_reward = progress
+            agent.load(latest_ckpt)
+        else:
+            print(f"[{algo.upper()}] --resume given but no progress checkpoint found; starting fresh.")
+
     # ── Tracking setup ───────────────────────────────────────────────────────
     run_name   = f"{algo}_{scenario}_{int(time.time())}"
     tb_log_dir = os.path.join(config["logging"]["tensorboard_dir"], run_name)
@@ -300,9 +395,9 @@ def train(config: Dict[str, Any], algo: str, scenario: str = "normal", gui: bool
         print(f"MLflow run id: {run.info.run_id}")
 
         if algo == "dqn":
-            _train_dqn(env, agent, config, writer, run_name)
+            _train_dqn(env, agent, config, writer, run_name, start_episode, best_reward)
         else:
-            _train_ppo(env, agent, config, writer, run_name)
+            _train_ppo(env, agent, config, writer, run_name, start_episode, best_reward)
 
     writer.close()
     env.close()
@@ -320,6 +415,10 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--scenario",  default="normal",
                    choices=["normal", "ns_peak", "ew_peak", "high"])
     p.add_argument("--gui",       action="store_true", help="Open SUMO GUI")
+    p.add_argument("--resume",    action="store_true",
+                   help="Resume from {algo}_latest.pt / {algo}_progress.json in the "
+                        "checkpoint dir if present (saved every training.latest_interval "
+                        "episodes). No-op if nothing to resume.")
     return p.parse_args()
 
 
@@ -334,6 +433,7 @@ if __name__ == "__main__":
     print(f"  Algorithm : {args.algo.upper()}")
     print(f"  Scenario  : {args.scenario}")
     print(f"  Episodes  : {config['training']['num_episodes']}")
+    print(f"  Resume    : {args.resume}")
     print(f"{'='*55}\n")
 
-    train(config, algo=args.algo, scenario=args.scenario, gui=args.gui)
+    train(config, algo=args.algo, scenario=args.scenario, gui=args.gui, resume=args.resume)

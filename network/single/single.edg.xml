@@ -3,10 +3,10 @@
        xsi:noNamespaceSchemaLocation="http://sumo.dlr.de/xsd/edges_file.xsd">
 
     <!-- Incoming edges (approach to intersection) -->
-    <edge id="N2C" from="north"  to="center" numLanes="2" speed="13.89" priority="1"/>
-    <edge id="S2C" from="south"  to="center" numLanes="2" speed="13.89" priority="1"/>
-    <edge id="E2C" from="east"   to="center" numLanes="2" speed="13.89" priority="1"/>
-    <edge id="W2C" from="west"   to="center" numLanes="2" speed="13.89" priority="1"/>
+    <edge id="N2C" from="north"  to="center" numLanes="3" speed="13.89" priority="1"/>
+    <edge id="S2C" from="south"  to="center" numLanes="3" speed="13.89" priority="1"/>
+    <edge id="E2C" from="east"   to="center" numLanes="3" speed="13.89" priority="1"/>
+    <edge id="W2C" from="west"   to="center" numLanes="3" speed="13.89" priority="1"/>
 
     <!-- Outgoing edges (departure from intersection) -->
     <edge id="C2N" from="center" to="north"  numLanes="2" speed="13.89" priority="1"/>

@@ -14,7 +14,8 @@ Yellow transitions are inserted automatically; minimum-green enforcement is buil
 
 Reward
 ------
-Configurable: negative waiting time, negative queue length, combined, or pressure.
+Configurable: negative waiting time, negative queue length, combined,
+pressure, or delta_waiting (change in cumulative delay, sumo-rl style).
 """
 
 import os
@@ -123,6 +124,7 @@ class TrafficEnv(gym.Env):
         self.green_duration:    int  = 0   # seconds in current green phase
         self.step_count:        int  = 0
         self._sumo_running:     bool = False
+        self._prev_waiting:    float = 0.0  # for reward.type == "delta_waiting"
 
         # ── Metric accumulators (reset each episode) ─────────────────────────
         self._ep_waiting: List[float] = []
@@ -141,7 +143,14 @@ class TrafficEnv(gym.Env):
 
         self._close_sumo()
 
-        self._traci.start(self._sumo_cmd, label=self.label)
+        # Vary SUMO's RNG seed each episode so vehicle insertion (Poisson
+        # arrivals in the route files) and driver behaviour differ between
+        # episodes. Deterministic when reset(seed=...) is given, since the
+        # SUMO seed is drawn from Gymnasium's np_random.
+        sumo_seed = int(self.np_random.integers(0, 2**31 - 1))
+        self._traci.start(
+            self._sumo_cmd + ["--seed", str(sumo_seed)], label=self.label
+        )
         self._sumo_running = True
 
         self._discover_phases()
@@ -158,6 +167,8 @@ class TrafficEnv(gym.Env):
         for _ in range(5):
             self._traci.simulationStep()
 
+        self._prev_waiting = self._total_waiting_time()
+
         return self._get_state(), {}
 
     def step(
@@ -165,6 +176,11 @@ class TrafficEnv(gym.Env):
     ) -> Tuple[np.ndarray, float, bool, bool, Dict]:
 
         # ── Enforce minimum green time ───────────────────────────────────────
+        # green_duration counts *actual green seconds* of the current phase.
+        # Because decisions happen every delta_time (5 s) and a switch step
+        # yields only (delta_time - yellow_time) = 2 s of green, green time
+        # quantises to 2 + 5k seconds. The effective minimum green is therefore
+        # the smallest such value >= min_green (12 s with the default config).
         if self.green_duration < self.min_green and action != self.current_phase_idx:
             action = self.current_phase_idx
 
@@ -215,6 +231,11 @@ class TrafficEnv(gym.Env):
     def _close_sumo(self) -> None:
         if self._sumo_running:
             try:
+                # Select this env's own connection before closing, so that a
+                # stale instance being garbage-collected can never close a
+                # connection belonging to another live env (relevant once
+                # multiple envs exist, e.g. the multi-agent grid).
+                self._traci.switch(self.label)
                 self._traci.close()
             except Exception:
                 pass
@@ -325,10 +346,28 @@ class TrafficEnv(gym.Env):
             )
         elif self.reward_type == "pressure":
             raw = -self._pressure()
+        elif self.reward_type == "delta_waiting":
+            raw = self._delta_waiting()
         else:
             raw = -self._total_waiting_time()
 
         return raw * self.reward_scale
+
+    def _delta_waiting(self) -> float:
+        """
+        Change in cumulative delay: previous total waiting time minus current
+        total waiting time (sumo-rl's default reward). Positive when waiting
+        time dropped this step, negative when it grew. Unlike the raw
+        `-total_waiting_time` reward, this is bounded per-step regardless of
+        how congested the intersection has become, which gives cleaner
+        per-step credit assignment — a step that helps clear a bad backlog
+        looks the same magnitude as a step that helps in light traffic,
+        rather than being dwarfed by the absolute waiting-time total.
+        """
+        current = self._total_waiting_time()
+        delta = self._prev_waiting - current
+        self._prev_waiting = current
+        return delta
 
     def _total_waiting_time(self) -> float:
         return sum(

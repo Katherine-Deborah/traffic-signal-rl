@@ -10,6 +10,7 @@ pyyaml>=6.0
 pandas>=2.0.0
 scipy>=1.10.0
 tqdm>=4.65.0
+pytest>=7.4.0
 # SUMO TraCI/sumolib - bundled with SUMO install, but also available via pip
 traci>=1.1.0
 sumolib>=1.1.0

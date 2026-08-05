@@ -19,6 +19,10 @@ results/tensorboard/
 results/checkpoints/dqn_ep*.pt
 results/checkpoints/ppo_ep*.pt
 
+# --resume checkpoints (transient; superseded by *_best.pt / *_final.pt on completion)
+results/checkpoints/**/*_latest.pt
+results/checkpoints/**/*_progress.json
+
 # Jupyter
 .ipynb_checkpoints/
 
@@ -29,3 +33,14 @@ Thumbs.db
 # IDE
 .vscode/
 .idea/
+
+# Local project-tracker tool (not part of this project)
+.tracker/
+requirements.md
+
+# Test cache
+.pytest_cache/
+
+# Pipeline run logs (regenerated each run)
+results/pipeline.log
+results/pipeline_stdout.log

@@ -25,12 +25,15 @@ import sys
 import time
 from typing import Any, Dict, List
 
+import matplotlib
+matplotlib.use("Agg")  # non-interactive backend — see training/evaluate.py
 import matplotlib.pyplot as plt
 import mlflow
 import numpy as np
 import pandas as pd
 import seaborn as sns
 import yaml
+from torch.utils.tensorboard import SummaryWriter
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -38,7 +41,7 @@ from agents.base_agent import get_device
 from agents.dqn_agent import DQNAgent
 from baselines.fixed_time import FixedTimeController
 from env.traffic_env import TrafficEnv
-from training.train import set_seed
+from training.train import set_seed, _train_dqn, _load_progress
 from training.evaluate import evaluate
 
 
@@ -87,13 +90,19 @@ def _train_variant(
     state_overrides: Dict[str, Any],
     scenario:      str,
     n_episodes:    int,
+    resume:        bool = False,
 ) -> str:
+    """
+    Reuses training.train._train_dqn (same as reward_ablation.py) instead of
+    a duplicated loop, so this gets --resume support for free: each variant
+    gets its own checkpoint subdirectory and picks back up from its last
+    saved episode rather than restarting from scratch.
+    """
     config = copy.deepcopy(base_config)
     config["state"].update(state_overrides)
     config["training"]["num_episodes"] = n_episodes
 
-    ckpt_dir  = os.path.join(config["training"]["checkpoint_dir"], "ablation_state")
-    ckpt_path = os.path.join(ckpt_dir, f"dqn_state_{variant_name}_best.pt")
+    ckpt_dir = os.path.join(config["training"]["checkpoint_dir"], "ablation_state", variant_name)
     os.makedirs(ckpt_dir, exist_ok=True)
     config["training"]["checkpoint_dir"] = ckpt_dir
 
@@ -111,14 +120,26 @@ def _train_variant(
     device = get_device(config)
     agent  = DQNAgent(state_size, num_actions, config, device)
 
+    ckpt_path = os.path.join(ckpt_dir, "dqn_best.pt")
+
+    start_episode = 0
+    best_reward   = -np.inf
+    if resume:
+        progress    = _load_progress(ckpt_dir, "dqn")
+        latest_ckpt = os.path.join(ckpt_dir, "dqn_latest.pt")
+        if progress is not None and os.path.exists(latest_ckpt):
+            start_episode, best_reward = progress
+            agent.load(latest_ckpt)
+
     mlflow.set_tracking_uri(config["mlflow"]["tracking_uri"])
     mlflow.set_experiment(config["mlflow"]["experiment_name"])
-    run_name = f"state_ablation_{variant_name}_{int(time.time())}"
+    run_name   = f"state_ablation_{variant_name}_{int(time.time())}"
+    tb_log_dir = os.path.join(config["logging"]["tensorboard_dir"], run_name)
+    writer     = SummaryWriter(log_dir=tb_log_dir)
 
     print(f"\n  Training DQN with state='{variant_name}' (size={state_size}) ...")
 
     env = TrafficEnv(cfg_env)
-    best_reward = -np.inf
 
     with mlflow.start_run(run_name=run_name):
         mlflow.log_params({
@@ -129,37 +150,11 @@ def _train_variant(
             "episodes":      n_episodes,
             **{f"state.{k}": v for k, v in state_overrides.items()},
         })
+        _train_dqn(env, agent, config, writer, run_name, start_episode, best_reward)
 
-        for episode in range(n_episodes):
-            state, _ = env.reset()
-            ep_reward = 0.0
-            done = False
-
-            while not done:
-                action = agent.select_action(state, explore=True)
-                next_state, reward, terminated, truncated, _ = env.step(action)
-                done = terminated or truncated
-                agent.store_transition(state, action, reward, next_state, float(done))
-                agent.learn()
-                ep_reward += reward
-                state = next_state
-
-            metrics = env.get_episode_metrics()
-            mlflow.log_metrics({"episode_reward": ep_reward, **metrics}, step=episode)
-
-            if ep_reward > best_reward:
-                best_reward = ep_reward
-                agent.save(ckpt_path)
-
-            if (episode + 1) % 50 == 0:
-                print(
-                    f"    [{variant_name}] ep {episode+1:3d}  "
-                    f"reward={ep_reward:7.2f}  "
-                    f"wait={metrics.get('mean_waiting_time', 0):6.1f}s"
-                )
-
+    writer.close()
     env.close()
-    print(f"  ✓ Best checkpoint: {ckpt_path}")
+    print(f"  Checkpoint: {ckpt_path}")
     return ckpt_path
 
 
@@ -208,6 +203,7 @@ def state_ablation(
     config:     Dict[str, Any],
     n_episodes: int = 200,
     scenario:   str = "normal",
+    resume:     bool = False,
 ) -> pd.DataFrame:
     print("\n" + "═" * 60)
     print("  Experiment 3: State Representation Ablation")
@@ -228,11 +224,11 @@ def state_ablation(
         delta_time = config["environment"]["delta_time"],
         num_phases = num_actions,
     )
-    results.append(evaluate(config, baseline, "Fixed-time", n_episodes=3, scenario=scenario))
+    results.append(evaluate(config, baseline, "Fixed-time", n_episodes=5, scenario=scenario))
 
     # ── Train + evaluate each state variant ──────────────────────────────────
     for variant_name, overrides in STATE_VARIANTS.items():
-        ckpt = _train_variant(config, variant_name, overrides, scenario, n_episodes)
+        ckpt = _train_variant(config, variant_name, overrides, scenario, n_episodes, resume=resume)
 
         _cfg = copy.deepcopy(config)
         _cfg["state"].update(overrides)
@@ -250,7 +246,7 @@ def state_ablation(
             agent.load(ckpt)
 
         results.append(
-            evaluate(_cfg, agent, f"DQN ({variant_name})", n_episodes=3, scenario=scenario)
+            evaluate(_cfg, agent, f"DQN ({variant_name})", n_episodes=5, scenario=scenario)
         )
 
     # ── Report ───────────────────────────────────────────────────────────────
@@ -275,9 +271,11 @@ if __name__ == "__main__":
     p.add_argument("--config",   default="configs/config.yaml")
     p.add_argument("--episodes", type=int, default=200)
     p.add_argument("--scenario", default="normal")
+    p.add_argument("--resume",   action="store_true",
+                   help="Resume each variant from its last checkpoint if present.")
     args = p.parse_args()
 
     with open(args.config) as f:
         cfg = yaml.safe_load(f)
 
-    state_ablation(cfg, n_episodes=args.episodes, scenario=args.scenario)
+    state_ablation(cfg, n_episodes=args.episodes, scenario=args.scenario, resume=args.resume)

@@ -52,7 +52,25 @@ def write_node_file(path: str) -> None:
     _write(path, content)
 
 
-def write_edge_file(path: str, num_lanes: int = 2) -> None:
+def write_edge_file(path: str, num_lanes: int = 3, num_out_lanes: int = 2) -> None:
+    """
+    3 lanes per incoming approach gives netconvert exactly 3 destination
+    edges to distribute (left/straight/right), so its default lane-connection
+    guesser assigns one lane per movement: lane 2 (leftmost) becomes an
+    exclusive left-turn lane, lane 1 straight-only, lane 0 straight+right.
+
+    Outgoing lane count matters too: netconvert's default TLS builder only
+    adds a protected left-turn phase when it judges the left-turn conflict
+    severe enough to need one, and empirically that heuristic is sensitive
+    to downstream capacity — 3 incoming / 2 outgoing lanes produces 4 green
+    phases (NS main, NS protected-left, EW main, EW protected-left); 3/3
+    collapses back to 2 phases with left folded into the main phase as a
+    permitted (yielding) movement. Keeping outgoing at 2 lanes (verified via
+    a standalone netconvert run) is what gets the protected-left phases.
+    traffic_env.py's _discover_phases() reads whatever phases come out of
+    the network, so this doubles the action space (2 -> 4 green phases)
+    with no agent-side code changes.
+    """
     content = f"""<?xml version="1.0" encoding="UTF-8"?>
 <edges xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
        xsi:noNamespaceSchemaLocation="http://sumo.dlr.de/xsd/edges_file.xsd">
@@ -64,10 +82,10 @@ def write_edge_file(path: str, num_lanes: int = 2) -> None:
     <edge id="W2C" from="west"   to="center" numLanes="{num_lanes}" speed="13.89" priority="1"/>
 
     <!-- Outgoing edges (departure from intersection) -->
-    <edge id="C2N" from="center" to="north"  numLanes="{num_lanes}" speed="13.89" priority="1"/>
-    <edge id="C2S" from="center" to="south"  numLanes="{num_lanes}" speed="13.89" priority="1"/>
-    <edge id="C2E" from="center" to="east"   numLanes="{num_lanes}" speed="13.89" priority="1"/>
-    <edge id="C2W" from="center" to="west"   numLanes="{num_lanes}" speed="13.89" priority="1"/>
+    <edge id="C2N" from="center" to="north"  numLanes="{num_out_lanes}" speed="13.89" priority="1"/>
+    <edge id="C2S" from="center" to="south"  numLanes="{num_out_lanes}" speed="13.89" priority="1"/>
+    <edge id="C2E" from="center" to="east"   numLanes="{num_out_lanes}" speed="13.89" priority="1"/>
+    <edge id="C2W" from="center" to="west"   numLanes="{num_out_lanes}" speed="13.89" priority="1"/>
 
 </edges>
 """
@@ -78,6 +96,13 @@ def write_route_file(path: str, scenario: str = "normal") -> None:
     """
     Traffic flows (vehicles/hour) for 12 origin-destination pairs.
     Each pair covers the 4 through movements + 8 turn movements.
+
+    Turn movements split into protected left-turn lane vs. shared
+    straight+right lane (see write_edge_file docstring). By intersection
+    geometry, the left-turn movement out of each approach is:
+        N2C -> C2E (N2E)   S2C -> C2W (S2W)
+        E2C -> C2S (E2S)   W2C -> C2N (W2N)
+    the corresponding *2N/*2W/*2S/*2E of the other name is the right turn.
     """
     scenarios = {
         "normal": {
@@ -119,7 +144,7 @@ def write_route_file(path: str, scenario: str = "normal") -> None:
         '<routes xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"',
         '        xsi:noNamespaceSchemaLocation="http://sumo.dlr.de/xsd/routes_file.xsd">',
         '',
-        '    <vType id="car" accel="2.6" decel="4.5" sigma="0.5"',
+        '    <vType id="car" accel="2.6" decel="4.5" sigma="0.5" speedDev="0.1"',
         '           length="5.0" minGap="2.5" maxSpeed="13.89" guiShape="passenger"/>',
         '',
         '    <!-- Route definitions -->',
@@ -131,11 +156,16 @@ def write_route_file(path: str, scenario: str = "normal") -> None:
     lines.append('')
     lines.append('    <!-- Traffic flows -->')
 
+    # Poisson arrivals: period="exp(rate)" draws exponentially distributed
+    # insertion gaps (rate in veh/s), so vehicle arrival patterns vary with
+    # SUMO's --seed. Plain vehsPerHour would insert equally spaced vehicles,
+    # making every episode identical regardless of seed.
     for route_id, vph in flows.items():
         if vph > 0:
+            rate = vph / 3600.0
             lines.append(
                 f'    <flow id="flow_{route_id}" route="{route_id}" '
-                f'begin="0" end="3600" vehsPerHour="{vph}" type="car"/>'
+                f'begin="0" end="3600" period="exp({rate:.6f})" type="car"/>'
             )
 
     lines.append('</routes>')
@@ -246,7 +276,7 @@ def generate_single(config: dict) -> None:
     net_file  = os.path.join(out_dir, "single.net.xml")
 
     write_node_file(node_file)
-    write_edge_file(edge_file, num_lanes=2)
+    write_edge_file(edge_file, num_lanes=3, num_out_lanes=2)
     run_netconvert(sumo_home, node_file, edge_file, net_file)
 
     print("\n── Generating route files ──")

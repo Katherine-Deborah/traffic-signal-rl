@@ -21,6 +21,10 @@ import os
 import sys
 from typing import Any, Dict, List, Optional, Tuple
 
+import matplotlib
+matplotlib.use("Agg")  # non-interactive backend: avoids GUI (Tk) init, which
+                        # can hang when running as a detached/background
+                        # process with no window session attached.
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -33,6 +37,7 @@ from agents.base_agent import get_device
 from agents.dqn_agent import DQNAgent
 from agents.ppo_agent import PPOAgent
 from baselines.fixed_time import FixedTimeController
+from baselines.max_pressure import MaxPressureController
 from env.traffic_env import TrafficEnv
 
 
@@ -59,8 +64,10 @@ def make_env(config: Dict[str, Any], scenario: str, gui: bool = False) -> Traffi
 #  Run one episode, return metrics
 # ──────────────────────────────────────────────
 
-def run_episode(env: TrafficEnv, controller, is_ppo: bool = False) -> Dict[str, float]:
-    state, _ = env.reset()
+def run_episode(
+    env: TrafficEnv, controller, is_ppo: bool = False, seed: Optional[int] = None
+) -> Dict[str, float]:
+    state, _ = env.reset(seed=seed)
     done      = False
     ep_reward = 0.0
 
@@ -97,14 +104,25 @@ def evaluate(
     scenario:    str   = "normal",
     gui:         bool  = False,
     is_ppo:      bool  = False,
+    controller_factory: Optional[Any] = None,
 ) -> Dict[str, Any]:
+    """
+    controller_factory: if given, called as controller_factory(env) *after*
+    the env is created, and its return value used instead of `controller`.
+    Needed for controllers like MaxPressureController that read live queue
+    state via the env's own traci connection rather than the state vector.
+    """
     env = make_env(config, scenario, gui)
+    if controller_factory is not None:
+        controller = controller_factory(env)
 
     all_metrics: List[Dict[str, float]] = []
     print(f"\n  Evaluating [{controller_name}] for {n_episodes} episodes...")
 
     for ep in range(n_episodes):
-        m = run_episode(env, controller, is_ppo=is_ppo)
+        # Fixed eval seed range, disjoint from training seeds (42..541), so
+        # every controller faces the same set of distinct traffic realisations.
+        m = run_episode(env, controller, is_ppo=is_ppo, seed=10_000 + ep)
         all_metrics.append(m)
         print(
             f"    ep {ep+1:2d}  reward={m['episode_reward']:7.2f}  "
@@ -126,29 +144,6 @@ def evaluate(
 
 
 # ──────────────────────────────────────────────
-#  Run baseline (no ML model needed)
-# ──────────────────────────────────────────────
-
-def run_baseline(
-    config:     Dict[str, Any],
-    n_episodes: int = 5,
-    scenario:   str = "normal",
-    gui:        bool = False,
-) -> Dict[str, Any]:
-    env        = make_env(config, scenario)
-    _, _       = env.reset()
-    num_phases = env.action_space.n
-    env.close()
-
-    baseline = FixedTimeController(
-        cycle_time  = 60,
-        delta_time  = config["environment"]["delta_time"],
-        num_phases  = num_phases,
-    )
-    return evaluate(config, baseline, "Fixed-time", n_episodes, scenario, gui, is_ppo=False)
-
-
-# ──────────────────────────────────────────────
 #  Plots (research paper style)
 # ──────────────────────────────────────────────
 
@@ -160,6 +155,8 @@ def _set_paper_style() -> None:
 def plot_comparison(
     results:   List[Dict[str, Any]],
     plots_dir: str,
+    filename:  str = "comparison.png",
+    subtitle:  str = "",
 ) -> None:
     _set_paper_style()
 
@@ -191,9 +188,10 @@ def plot_comparison(
                 f"{mean:.1f}", ha="center", va="bottom", fontsize=10
             )
 
-    fig.suptitle("Traffic Signal Controller Comparison", fontsize=14, fontweight="bold")
+    title = "Traffic Signal Controller Comparison" + (f" — {subtitle}" if subtitle else "")
+    fig.suptitle(title, fontsize=14, fontweight="bold")
     os.makedirs(plots_dir, exist_ok=True)
-    save_path = os.path.join(plots_dir, "comparison.png")
+    save_path = os.path.join(plots_dir, filename)
     fig.savefig(save_path)
     print(f"\nComparison plot saved: {save_path}")
     plt.close(fig)
@@ -247,10 +245,12 @@ def print_results_table(results: List[Dict[str, Any]], baseline_name: str = "Fix
     print("═" * 72)
 
 
-def save_results_csv(results: List[Dict[str, Any]], metrics_dir: str) -> None:
+def save_results_csv(
+    results: List[Dict[str, Any]], metrics_dir: str, filename: str = "evaluation_results.csv"
+) -> None:
     os.makedirs(metrics_dir, exist_ok=True)
     df   = pd.DataFrame(results)
-    path = os.path.join(metrics_dir, "evaluation_results.csv")
+    path = os.path.join(metrics_dir, filename)
     df.to_csv(path, index=False)
     print(f"Results saved: {path}")
 
@@ -266,22 +266,28 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--ppo",      default=None, help="Path to PPO checkpoint")
     p.add_argument("--episodes", type=int, default=5)
     p.add_argument("--scenario", default="normal",
-                   choices=["normal", "ns_peak", "ew_peak", "high"])
+                   choices=["normal", "ns_peak", "ew_peak", "high"],
+                   help="Used if --scenarios is not given.")
+    p.add_argument("--scenarios", default=None,
+                   help="Comma-separated list of scenarios to evaluate, e.g. "
+                        "'normal,high'. Overrides --scenario. Produces one "
+                        "comparison{_scenario}.png / evaluation_results{_scenario}.csv "
+                        "per scenario (no suffix for 'normal', to match existing paths).")
     p.add_argument("--gui",      action="store_true")
     return p.parse_args()
 
 
-if __name__ == "__main__":
-    args   = _parse_args()
-    config = load_config(args.config)
+def run_evaluation(config: Dict[str, Any], scenario: str, args: argparse.Namespace) -> None:
     device = get_device(config)
 
     # Discover state/action size from environment
-    _env       = make_env(config, args.scenario)
+    _env       = make_env(config, scenario)
     _s, _      = _env.reset()
     state_size  = _env.observation_space.shape[0]
     num_actions = _env.action_space.n
     _env.close()
+
+    print(f"\n{'#' * 60}\n  Scenario: {scenario}\n{'#' * 60}")
 
     results: List[Dict[str, Any]] = []
 
@@ -292,7 +298,15 @@ if __name__ == "__main__":
         num_phases = num_actions,
     )
     results.append(
-        evaluate(config, baseline, "Fixed-time", args.episodes, args.scenario, args.gui)
+        evaluate(config, baseline, "Fixed-time", args.episodes, scenario, args.gui)
+    )
+
+    # ── Max-Pressure baseline (static, no training) ──────────────────────────
+    results.append(
+        evaluate(
+            config, None, "Max-Pressure", args.episodes, scenario, args.gui,
+            controller_factory=MaxPressureController,
+        )
     )
 
     # ── DQN agent ────────────────────────────────────────────────────────────
@@ -301,7 +315,7 @@ if __name__ == "__main__":
         dqn_agent = DQNAgent(state_size, num_actions, config, device)
         dqn_agent.load(dqn_path)
         results.append(
-            evaluate(config, dqn_agent, "DQN", args.episodes, args.scenario, args.gui)
+            evaluate(config, dqn_agent, "DQN", args.episodes, scenario, args.gui)
         )
     else:
         print(f"\n[DQN] checkpoint not found at '{dqn_path}' — skipping.")
@@ -312,12 +326,24 @@ if __name__ == "__main__":
         ppo_agent = PPOAgent(state_size, num_actions, config, device)
         ppo_agent.load(ppo_path)
         results.append(
-            evaluate(config, ppo_agent, "PPO", args.episodes, args.scenario, args.gui, is_ppo=True)
+            evaluate(config, ppo_agent, "PPO", args.episodes, scenario, args.gui, is_ppo=True)
         )
     else:
         print(f"\n[PPO] checkpoint not found at '{ppo_path}' — skipping.")
 
     # ── Report ───────────────────────────────────────────────────────────────
+    suffix = "" if scenario == "normal" else f"_{scenario}"
     print_results_table(results)
-    save_results_csv(results, config["logging"]["metrics_dir"])
-    plot_comparison(results, config["logging"]["plots_dir"])
+    save_results_csv(results, config["logging"]["metrics_dir"], f"evaluation_results{suffix}.csv")
+    plot_comparison(results, config["logging"]["plots_dir"], f"comparison{suffix}.png", subtitle=scenario)
+
+
+if __name__ == "__main__":
+    args   = _parse_args()
+    config = load_config(args.config)
+
+    scenarios = (
+        [s.strip() for s in args.scenarios.split(",")] if args.scenarios else [args.scenario]
+    )
+    for scenario in scenarios:
+        run_evaluation(config, scenario, args)

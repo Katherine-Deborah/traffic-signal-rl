@@ -168,12 +168,19 @@ class DQNAgent(BaseAgent):
         if self._learn_steps % self.target_update == 0:
             self.tgt_net.load_state_dict(self.q_net.state_dict())
 
-        # Decay epsilon
-        self.epsilon = max(self.epsilon_end, self.epsilon * self.epsilon_decay)
-
         loss_val = loss.item()
         self._losses.append(loss_val)
         return {"loss": loss_val}
+
+    def decay_epsilon(self) -> None:
+        """
+        Decay exploration rate. Called once per *episode* by the training loop.
+
+        (Decaying per learn-step — the common tutorial pattern — would exhaust
+        exploration within ~8 episodes here: 720 learn steps/episode means
+        0.9995^5990 ≈ 0.05 after just 8.3 episodes of a 500-episode run.)
+        """
+        self.epsilon = max(self.epsilon_end, self.epsilon * self.epsilon_decay)
 
     def save(self, path: str) -> None:
         os.makedirs(os.path.dirname(path), exist_ok=True)
