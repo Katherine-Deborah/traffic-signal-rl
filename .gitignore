@@ -19,6 +19,10 @@ results/tensorboard/
 results/checkpoints/dqn_ep*.pt
 results/checkpoints/ppo_ep*.pt
 
+# --resume checkpoints (transient; superseded by *_best.pt / *_final.pt on completion)
+results/checkpoints/**/*_latest.pt
+results/checkpoints/**/*_progress.json
+
 # Jupyter
 .ipynb_checkpoints/
 

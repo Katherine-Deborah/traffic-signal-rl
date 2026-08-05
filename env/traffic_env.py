@@ -14,7 +14,8 @@ Yellow transitions are inserted automatically; minimum-green enforcement is buil
 
 Reward
 ------
-Configurable: negative waiting time, negative queue length, combined, or pressure.
+Configurable: negative waiting time, negative queue length, combined,
+pressure, or delta_waiting (change in cumulative delay, sumo-rl style).
 """
 
 import os
@@ -123,6 +124,7 @@ class TrafficEnv(gym.Env):
         self.green_duration:    int  = 0   # seconds in current green phase
         self.step_count:        int  = 0
         self._sumo_running:     bool = False
+        self._prev_waiting:    float = 0.0  # for reward.type == "delta_waiting"
 
         # ── Metric accumulators (reset each episode) ─────────────────────────
         self._ep_waiting: List[float] = []
@@ -164,6 +166,8 @@ class TrafficEnv(gym.Env):
         self._set_green_phase(self.current_phase_idx)
         for _ in range(5):
             self._traci.simulationStep()
+
+        self._prev_waiting = self._total_waiting_time()
 
         return self._get_state(), {}
 
@@ -342,10 +346,28 @@ class TrafficEnv(gym.Env):
             )
         elif self.reward_type == "pressure":
             raw = -self._pressure()
+        elif self.reward_type == "delta_waiting":
+            raw = self._delta_waiting()
         else:
             raw = -self._total_waiting_time()
 
         return raw * self.reward_scale
+
+    def _delta_waiting(self) -> float:
+        """
+        Change in cumulative delay: previous total waiting time minus current
+        total waiting time (sumo-rl's default reward). Positive when waiting
+        time dropped this step, negative when it grew. Unlike the raw
+        `-total_waiting_time` reward, this is bounded per-step regardless of
+        how congested the intersection has become, which gives cleaner
+        per-step credit assignment — a step that helps clear a bad backlog
+        looks the same magnitude as a step that helps in light traffic,
+        rather than being dwarfed by the absolute waiting-time total.
+        """
+        current = self._total_waiting_time()
+        delta = self._prev_waiting - current
+        self._prev_waiting = current
+        return delta
 
     def _total_waiting_time(self) -> float:
         return sum(

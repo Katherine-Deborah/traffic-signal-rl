@@ -26,12 +26,15 @@ import sys
 import time
 from typing import Any, Dict, List
 
+import matplotlib
+matplotlib.use("Agg")  # non-interactive backend — see training/evaluate.py
 import matplotlib.pyplot as plt
 import mlflow
 import numpy as np
 import pandas as pd
 import seaborn as sns
 import yaml
+from torch.utils.tensorboard import SummaryWriter
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -39,11 +42,11 @@ from agents.base_agent import get_device
 from agents.dqn_agent import DQNAgent
 from baselines.fixed_time import FixedTimeController
 from env.traffic_env import TrafficEnv
-from training.train import set_seed
+from training.train import set_seed, _train_dqn, _load_progress
 from training.evaluate import evaluate
 
 
-REWARD_VARIANTS = ["waiting_time", "queue_length", "combined"]
+REWARD_VARIANTS = ["waiting_time", "queue_length", "combined", "delta_waiting"]
 
 
 # ──────────────────────────────────────────────
@@ -55,16 +58,24 @@ def _train_variant(
     reward_type: str,
     scenario:    str,
     n_episodes:  int,
+    resume:      bool = False,
 ) -> str:
-    """Train DQN with a specific reward type. Returns path to best checkpoint."""
+    """
+    Train DQN with a specific reward type. Returns path to best checkpoint.
+
+    Reuses training.train._train_dqn (the same loop used by the main training
+    entry point) instead of a duplicated copy, so this ablation gets the same
+    --resume support for free: each variant gets its own checkpoint
+    subdirectory, and a resumed run picks back up from whatever episode it
+    last saved (every training.latest_interval episodes) rather than
+    restarting the variant from scratch.
+    """
     config = copy.deepcopy(base_config)
     config["reward"]["type"] = reward_type
     config["training"]["num_episodes"] = n_episodes
 
-    ckpt_dir  = os.path.join(config["training"]["checkpoint_dir"], "ablation_reward")
-    ckpt_path = os.path.join(ckpt_dir, f"dqn_{reward_type}_best.pt")
+    ckpt_dir = os.path.join(config["training"]["checkpoint_dir"], "ablation_reward", reward_type)
     os.makedirs(ckpt_dir, exist_ok=True)
-
     config["training"]["checkpoint_dir"] = ckpt_dir
 
     set_seed(config["training"]["seed"])
@@ -81,14 +92,26 @@ def _train_variant(
     device = get_device(config)
     agent  = DQNAgent(state_size, num_actions, config, device)
 
+    ckpt_path = os.path.join(ckpt_dir, "dqn_best.pt")
+
+    start_episode = 0
+    best_reward   = -np.inf
+    if resume:
+        progress    = _load_progress(ckpt_dir, "dqn")
+        latest_ckpt = os.path.join(ckpt_dir, "dqn_latest.pt")
+        if progress is not None and os.path.exists(latest_ckpt):
+            start_episode, best_reward = progress
+            agent.load(latest_ckpt)
+
     mlflow.set_tracking_uri(config["mlflow"]["tracking_uri"])
     mlflow.set_experiment(config["mlflow"]["experiment_name"])
-    run_name = f"reward_ablation_{reward_type}_{int(time.time())}"
+    run_name   = f"reward_ablation_{reward_type}_{int(time.time())}"
+    tb_log_dir = os.path.join(config["logging"]["tensorboard_dir"], run_name)
+    writer     = SummaryWriter(log_dir=tb_log_dir)
 
     print(f"\n  Training DQN with reward='{reward_type}' for {n_episodes} episodes...")
 
     env = TrafficEnv(cfg_env)
-    best_reward = -np.inf
 
     with mlflow.start_run(run_name=run_name):
         mlflow.log_params({
@@ -97,40 +120,11 @@ def _train_variant(
             "scenario":    scenario,
             "episodes":    n_episodes,
         })
+        _train_dqn(env, agent, config, writer, run_name, start_episode, best_reward)
 
-        base_seed = config["training"]["seed"]
-        for episode in range(n_episodes):
-            state, _ = env.reset(seed=base_seed + episode)
-            ep_reward = 0.0
-            done = False
-
-            while not done:
-                action = agent.select_action(state, explore=True)
-                next_state, reward, terminated, truncated, _ = env.step(action)
-                done = terminated or truncated
-                # Bootstrap across time-limit truncation (store terminated only)
-                agent.store_transition(state, action, reward, next_state, float(terminated))
-                agent.learn()
-                ep_reward += reward
-                state = next_state
-
-            agent.decay_epsilon()
-            metrics = env.get_episode_metrics()
-            mlflow.log_metrics({"episode_reward": ep_reward, **metrics}, step=episode)
-
-            if ep_reward > best_reward:
-                best_reward = ep_reward
-                agent.save(ckpt_path)
-
-            if (episode + 1) % 50 == 0:
-                print(
-                    f"    [{reward_type}] ep {episode+1:3d}  "
-                    f"reward={ep_reward:7.2f}  "
-                    f"wait={metrics.get('mean_waiting_time', 0):6.1f}s"
-                )
-
+    writer.close()
     env.close()
-    print(f"  ✓ Best checkpoint: {ckpt_path}  (reward={best_reward:.2f})")
+    print(f"  Checkpoint: {ckpt_path}")
     return ckpt_path
 
 
@@ -186,6 +180,7 @@ def reward_ablation(
     config:     Dict[str, Any],
     n_episodes: int = 200,
     scenario:   str = "normal",
+    resume:     bool = False,
 ) -> pd.DataFrame:
     print("\n" + "═" * 60)
     print("  Experiment 2: Reward Function Ablation")
@@ -210,7 +205,7 @@ def reward_ablation(
 
     # ── Train + evaluate each reward variant ─────────────────────────────────
     for reward_type in REWARD_VARIANTS:
-        ckpt = _train_variant(config, reward_type, scenario, n_episodes)
+        ckpt = _train_variant(config, reward_type, scenario, n_episodes, resume=resume)
 
         # Load best checkpoint for evaluation
         _cfg = copy.deepcopy(config)
@@ -255,9 +250,11 @@ if __name__ == "__main__":
     p.add_argument("--config",   default="configs/config.yaml")
     p.add_argument("--episodes", type=int, default=200)
     p.add_argument("--scenario", default="normal")
+    p.add_argument("--resume",   action="store_true",
+                   help="Resume each variant from its last checkpoint if present.")
     args = p.parse_args()
 
     with open(args.config) as f:
         cfg = yaml.safe_load(f)
 
-    reward_ablation(cfg, n_episodes=args.episodes, scenario=args.scenario)
+    reward_ablation(cfg, n_episodes=args.episodes, scenario=args.scenario, resume=args.resume)

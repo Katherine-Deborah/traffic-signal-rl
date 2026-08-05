@@ -29,7 +29,7 @@ action:
   num_phases: 2            # NS green / EW green (overridden by network at runtime)
 
 reward:
-  type: "waiting_time"     # "waiting_time" | "queue_length" | "combined" | "pressure"
+  type: "waiting_time"     # "waiting_time" | "queue_length" | "combined" | "pressure" | "delta_waiting"
   waiting_weight: 0.5
   queue_weight: 0.5
   scale: 0.001             # scale raw reward to stable range
@@ -63,8 +63,12 @@ ppo:
 training:
   algorithm: "dqn"         # "dqn" | "ppo"
   num_episodes: 500
-  log_interval: 25         # print progress every N episodes
-  save_interval: 100       # save checkpoint every N episodes
+  log_interval: 5          # print progress every N episodes (kept frequent: background
+                            # task kills have repeatedly coincided with the multi-minute
+                            # silent gaps between prints — more frequent stdout output
+                            # is cheap insurance against whatever's watching for that)
+  save_interval: 100       # save a milestone checkpoint every N episodes
+  latest_interval: 10      # save {algo}_latest.pt + progress.json every N episodes, for --resume
   checkpoint_dir: "results/checkpoints"
   seed: 42
   device: "auto"           # "auto" | "cpu" | "cuda"
