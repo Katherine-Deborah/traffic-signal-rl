@@ -1,6 +1,12 @@
 # Deep RL Traffic Signal Control (DQN & PPO)
 
+[![tests](https://github.com/Katherine-Deborah/traffic-signal-rl/actions/workflows/tests.yml/badge.svg)](https://github.com/Katherine-Deborah/traffic-signal-rl/actions/workflows/tests.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-informational.svg)](LICENSE)
+![Python](https://img.shields.io/badge/python-3.11-informational)
+
 A reinforcement learning system that learns to control a traffic signal at a 4-way intersection with protected left-turn phases, using [SUMO](https://sumo.dlr.de/) (Simulation of Urban MObility) and PyTorch. Two RL algorithms — **DQN** and **PPO** — are implemented from scratch and benchmarked against both a naive fixed-time baseline and **Max-Pressure** (a strong non-learned control policy from the traffic-signal-RL literature), across multiple traffic scenarios, with reward-function and state-feature ablation studies.
+
+**[→ Read the case study](https://claude.ai/code/artifact/1450e324-cde9-4644-a414-7607c999f9f5)** — a walkthrough of the results, the intersection mechanics, the correctness bugs found along the way, and the honest failure case under saturated traffic.
 
 ## Results at a Glance
 
