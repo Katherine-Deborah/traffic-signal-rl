@@ -26,6 +26,21 @@ Evaluated on 5 held-out traffic seeds (mean ± std seconds of wait per vehicle):
 
 ![Controller comparison](results/plots/comparison.png)
 
+**See it running** — same traffic realisation for all four controllers; watch
+the queue on the north approach back up under fixed-time while it stays short
+under the other three:
+
+<table>
+<tr>
+<td align="center"><b>Fixed-time</b><br><img src="results/gifs/fixed_time.gif" width="220"></td>
+<td align="center"><b>Max-Pressure</b><br><img src="results/gifs/max_pressure.gif" width="220"></td>
+</tr>
+<tr>
+<td align="center"><b>DQN</b><br><img src="results/gifs/dqn.gif" width="220"></td>
+<td align="center"><b>PPO</b><br><img src="results/gifs/ppo.gif" width="220"></td>
+</tr>
+</table>
+
 RL ties the strong baseline on ordinary traffic — but loses badly on traffic
 heavier than what it trained on. See the [case study](https://claude.ai/code/artifact/1450e324-cde9-4644-a414-7607c999f9f5#catch)
 for that result and the reward-shaping failure mode found alongside it.
