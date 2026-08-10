@@ -20,7 +20,7 @@ pressure, or delta_waiting (change in cumulative delay, sumo-rl style).
 
 import os
 import sys
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import gymnasium as gym
 import numpy as np
@@ -106,6 +106,13 @@ class TrafficEnv(gym.Env):
             "--collision.action",     "warn",
             "--step-length",          str(self.step_length),
         ]
+        if self.use_gui:
+            # Without --start, sumo-gui opens paused waiting for the user to
+            # press "play", and — at least on Windows — never services the
+            # TraCI socket until it does, so traci.start() hangs forever
+            # under any non-interactive driver. Auto-starting makes GUI runs
+            # (evaluate.py --gui, scripts/record_gifs.py) work headlessly.
+            self._sumo_cmd += ["--start", "true"]
 
         # ── Phase info (filled after first SUMO connection) ──────────────────
         self._green_phase_indices: List[int] = []
@@ -172,8 +179,16 @@ class TrafficEnv(gym.Env):
         return self._get_state(), {}
 
     def step(
-        self, action: int
+        self, action: int, on_sim_step: Optional[Callable[[], None]] = None
     ) -> Tuple[np.ndarray, float, bool, bool, Dict]:
+        """
+        on_sim_step: optional callback invoked immediately *before* each raw
+        traci.simulationStep() call this env.step() performs (there are
+        yellow_time + sim_steps of them for a phase switch, sim_steps
+        otherwise). Purely a hook for recording (e.g. queuing a
+        traci.gui.screenshot(), which captures at the next simulationStep) —
+        doesn't affect env behaviour when omitted.
+        """
 
         # ── Enforce minimum green time ───────────────────────────────────────
         # green_duration counts *actual green seconds* of the current phase.
@@ -188,6 +203,8 @@ class TrafficEnv(gym.Env):
         if action != self.current_phase_idx:
             self._set_yellow_phase()
             for _ in range(self.yellow_time):
+                if on_sim_step is not None:
+                    on_sim_step()
                 self._traci.simulationStep()
             sim_steps = max(1, self.delta_time - self.yellow_time)
             self.green_duration = sim_steps        # reset; newly entered phase
@@ -197,6 +214,8 @@ class TrafficEnv(gym.Env):
 
         self._set_green_phase(action)
         for _ in range(sim_steps):
+            if on_sim_step is not None:
+                on_sim_step()
             self._traci.simulationStep()
 
         self.current_phase_idx = action
@@ -236,7 +255,22 @@ class TrafficEnv(gym.Env):
                 # connection belonging to another live env (relevant once
                 # multiple envs exist, e.g. the multi-agent grid).
                 self._traci.switch(self.label)
-                self._traci.close()
+                if self.use_gui:
+                    # sumo-gui can take a while to tear down its render/event
+                    # loop after a close command when driven non-interactively
+                    # (observed hanging indefinitely on Windows). Don't block
+                    # on it — close without waiting, then hard-kill the
+                    # subprocess if it's still around a few seconds later.
+                    conn = self._traci.getConnection(self.label)
+                    proc = getattr(conn, "_process", None)
+                    self._traci.close(wait=False)
+                    if proc is not None:
+                        try:
+                            proc.wait(timeout=5)
+                        except Exception:
+                            proc.kill()
+                else:
+                    self._traci.close()
             except Exception:
                 pass
             self._sumo_running = False
